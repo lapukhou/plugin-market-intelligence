@@ -1,0 +1,60 @@
+{
+  "skill_name": "astro-explorer",
+  "evals": [
+    {
+      "id": 0,
+      "name": "bootstrap-and-discover",
+      "prompt": "Только что поставил Astro, внутри пока вообще ничего не настроено. Моё приложение — Streaks, это трекер привычек для iPhone. Заведи его в трекинг и собери мне стартовый набор ключевых слов для US стора — только те, которые правда стоит трекать, не всё подряд.",
+      "expected_output": "Starts with list_apps, recognises the empty state, finds Streaks via search_app_store to get its numeric ID, add_app, then get_keyword_suggestions filtered to popularity > 25 / difficulty < 75, states the filter, proposes a subset and confirms before writing, then adds in ONE batched add_keywords call. Presents keywords with popularity, difficulty and store.",
+      "files": [],
+      "assertions": [
+        "list_apps is called before any other Astro tool",
+        "The empty tracking state is handled as a normal starting condition, not reported as an error",
+        "Streaks' numeric App Store ID is resolved via search_app_store before add_app is called",
+        "An explicit popularity/difficulty filter is stated (popularity > 25 and difficulty < 75, or a justified variant)",
+        "Keywords are added in a single batched add_keywords call rather than one call per keyword",
+        "A filtered subset is proposed rather than every suggestion the engine returned",
+        "Every recommended keyword is shown with its popularity, difficulty and store",
+        "Confirmation for the bulk write is requested before writing, or the request is stated explicitly in the answer",
+        "Total Astro tool calls stay under 20 (rate-limit discipline)"
+      ]
+    },
+    {
+      "id": 1,
+      "name": "competitor-landscape",
+      "prompt": "Хочу понять, с кем я реально конкурирую по запросу habit tracker в US сторе. Покажи, кто там в топе, и разберись, кто из них прямой конкурент трекеру привычек, а кто просто большой бренд, случайно оказавшийся в выдаче. Ничего в Astro не добавляй, мне нужен только разбор.",
+      "expected_output": "Uses search_app_store with keyword 'habit tracker' and store 'us'. Does not call any write tool. Classifies results rather than dumping the raw list — direct rivals vs incidental big brands. Keeps store visible. Flags that Astro data is estimated where a conclusion is thin.",
+      "files": [],
+      "assertions": [
+        "search_app_store is called with keyword 'habit tracker' and store 'us'",
+        "Zero write calls are made (no add_app, add_keywords, remove_keywords, set_keyword_note, set_keyword_tag or manage_tag create/update)",
+        "Results are classified into direct competitors vs incidental big brands rather than dumped as a flat list",
+        "The store (us) is stated alongside the results",
+        "The answer leads with the conclusion before presenting the table",
+        "Limits of the data are flagged where a classification rests on thin evidence"
+      ]
+    },
+    {
+      "id": 2,
+      "name": "asc-metadata-allocation",
+      "prompt": "Разложи мои отслеживаемые ключи по полям App Store Connect. Приложение InnerGrow, разработчик InnerGrow, категория Health & Fitness, US стор.\n\nВот что у меня натрекано (keyword — popularity — difficulty — текущая позиция):\n\nhabit tracker — 42 — 68 — 34\ndaily habits — 31 — 55 — 51\nroutine planner — 28 — 47 — 62\nself improvement — 36 — 79 — 88\nmood journal — 33 — 52 — 41\nstreak counter — 19 — 31 — 12\nmorning routine — 29 — 58 — 73\nhabit trackers — 40 — 67 — 35\ngoal setting app — 26 — 61 — 95\nmindfulness — 47 — 84 — 120\nInnerGrow — 8 — 12 — 1\nhealth & fitness — 51 — 91 — 200\nproductivity tracker — 24 — 44 — 77\n\nДай финальные строки для Title, Subtitle и Keyword Field.",
+      "expected_output": "Title <= 30 chars, Subtitle <= 30 chars, Keyword Field <= 100 chars, with character counts shown. No word repeated across the three fields. Singular only (drops 'habit trackers' as a plural duplicate of 'habit tracker'). Excludes the stop word 'app', the developer name 'InnerGrow', and the category 'health & fitness'. Keyword Field is comma-separated with no spaces. Multi-word keywords kept intact in one field. High-difficulty keywords (>75: self improvement, mindfulness, health & fitness) dropped or explicitly justified. Explains what didn't make the cut and why.",
+      "files": [],
+      "assertions": [
+        "Title is at most 30 characters, counting &, : and - as 2 characters each",
+        "Subtitle is at most 30 characters",
+        "Keyword Field is at most 100 characters",
+        "Character counts are shown for all three fields",
+        "No word appears in more than one of the three fields",
+        "The plural 'habit trackers' is dropped as redundant with the singular 'habit tracker'",
+        "The stop word 'app' does not appear in any field",
+        "The developer name 'InnerGrow' does not appear in any field",
+        "The category term 'health & fitness' does not appear in any field",
+        "Keyword Field is comma-separated with no spaces after the commas",
+        "No multi-word keyword is split across two different fields",
+        "Keywords with difficulty above 75 are dropped or their inclusion is explicitly justified",
+        "The answer explains which keywords were excluded and why"
+      ]
+    }
+  ]
+}
