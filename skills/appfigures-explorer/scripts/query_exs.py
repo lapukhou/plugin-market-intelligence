@@ -3,12 +3,21 @@
 query_exs.py — wrapper for Appfigures Explorer queries.
 
 Usage:
-    python query_exs.py --q '<DSL JSON>' [--fields F1,F2,…] [--sort -release_date]
-                        [--count 100] [--page 1] [--endpoint exs|exsc] [-o file.json]
+    python query_exs.py --q '<DSL JSON>' [--fields F1,F2,…]
+                        [--count 25] [--page 1] [--endpoint exs|exsc] [-o file.json]
 
 The DSL is passed as a JSON string. The script url-encodes the form body and
 adds a browser User-Agent. Stdout is pure JSON (pipeable to jq); all
 diagnostics go to stderr.
+
+Anonymous plan limits (enforced by the API with a 403):
+  * `sort` is rejected outright — do not pass --sort; sort client-side instead.
+  * `count * page` must be <= 25, so only the first 25 records of any result
+    set are reachable. To reach the top of a market, narrow the filter (e.g. a
+    download_estimates_sum_30_days floor calibrated with --endpoint exsc).
+
+Note: a value beginning with "-" needs the `=` form, or argparse reads it as a
+flag: --sort=-release_date, not --sort -release_date.
 
 Example:
     python query_exs.py \\
@@ -31,8 +40,11 @@ DEFAULT_FIELDS = (
     'monetization_strategies,all_rating,all_rating_count,custom_meta'
 )
 
+# Anonymous plan: count * page <= 25, and any sort= is rejected with a 403.
+MAX_WINDOW = 25
 
-def fetch(q, fields=DEFAULT_FIELDS, sort=None, count=100, page=1, endpoint='exs'):
+
+def fetch(q, fields=DEFAULT_FIELDS, sort=None, count=MAX_WINDOW, page=1, endpoint='exs'):
     """POST to the Explorer endpoint and return parsed JSON."""
     base = f'https://appfigures.com/market/explorer/_u/data/{endpoint}'
     qs = {'fields': fields, 'count': str(count), 'page': str(page)}
@@ -60,8 +72,11 @@ def main():
     p.add_argument('--q', required=True, help='DSL filter as JSON string')
     p.add_argument('--fields', default=DEFAULT_FIELDS,
                    help=f'CSV of fields. Default: {DEFAULT_FIELDS}. Use "*" for all.')
-    p.add_argument('--sort', default=None, help='e.g. -download_estimates_sum_30_days')
-    p.add_argument('--count', type=int, default=100, help='Records per page (max 1000)')
+    p.add_argument('--sort', default=None,
+                   help='Rejected by the anonymous plan (403) — kept for authenticated use only. '
+                        'Pass as --sort=-field, not --sort -field.')
+    p.add_argument('--count', type=int, default=MAX_WINDOW,
+                   help=f'Records per page (anonymous max {MAX_WINDOW})')
     p.add_argument('--page', type=int, default=1)
     p.add_argument('--endpoint', choices=['exs', 'exsc'], default='exs')
     p.add_argument('-o', '--output', default=None, help='Save JSON to file')
@@ -74,6 +89,20 @@ def main():
     except json.JSONDecodeError as e:
         print(f'❌ Invalid JSON in --q: {e}', file=sys.stderr)
         sys.exit(2)
+
+    # Fail fast on the plan limits instead of spending a request on a 403.
+    if args.endpoint == 'exs':
+        if args.sort:
+            print('❌ --sort is rejected by the anonymous plan (403). Omit it and sort '
+                  'client-side; narrow the filter to bring the records you want into the '
+                  f'first {MAX_WINDOW}.', file=sys.stderr)
+            sys.exit(2)
+        if args.count * args.page > MAX_WINDOW:
+            print(f'❌ count*page = {args.count * args.page} exceeds the anonymous '
+                  f'{MAX_WINDOW}-record window. Use --count {MAX_WINDOW} --page 1, and narrow '
+                  'the DSL filter (e.g. a download_estimates_sum_30_days floor calibrated with '
+                  '--endpoint exsc) rather than paging.', file=sys.stderr)
+            sys.exit(2)
 
     data = fetch(args.q, args.fields, args.sort, args.count, args.page, args.endpoint)
 

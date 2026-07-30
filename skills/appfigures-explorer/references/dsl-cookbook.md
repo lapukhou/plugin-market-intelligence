@@ -101,11 +101,11 @@ DSL:
 ["and",
   ["match","storefronts",["and","apple:ios"]],
   ["match","release_date",["range",FROM_MS,TO_MS]],
-  ["match","download_estimates_sum_30_days",["range",1,99999999]]
+  ["match","download_estimates_sum_30_days",["range",FLOOR,99999999]]
 ]
 ```
-Sort: `sort=-download_estimates_sum_30_days`
 Fields: `fields=name,developer,stores_id,product_id,release_date,custom_meta`
+Selection: **no `sort=`** (403 anonymously). `FLOOR` is what makes this a "top" query — calibrate it with `/exsc` until `count ≤ 25`, then sort client-side.
 
 ### "All apps of a specific publisher"
 DSL:
@@ -115,8 +115,8 @@ DSL:
   ["match","developer",["and","<developer_first_token>"]]
 ]
 ```
-Sort: `sort=-download_estimates_sum_30_days` (top) or `-release_date` (newest)
 Fields: `fields=name,developer,stores_id,release_date,monetization_strategies,custom_meta`
+Selection: no `sort=`. If the publisher has more than 25 apps, only the first 25 are reachable — add a `download_estimates_sum_30_days` floor to bias the window toward their real earners, and say so in the report.
 
 ⚠️ If the publisher has many near-namesakes (like DPM APPS LP — many "DPM*"), use more tokens: `["and","DPM","APPS"]`. Filter to the exact name client-side afterwards.
 
@@ -235,6 +235,7 @@ Example: top Health & Fitness iOS apps:
 ## Known limitations
 
 - The `genre` parameter does not work in the DSL; use `categories.all` (see above).
-- Sorting works on root-level fields only (not fields inside `custom_meta`). Sort by revenue client-side after the dump.
+- **`sort=` is unavailable anonymously** — any value returns 403 ("Cannot use custom sort with the current account plan"). Never send it. Sort client-side.
+- **`/exs` returns at most 25 records** (`count × page ≤ 25`), in default relevance order. Deep pagination is impossible. Narrow the filter — usually with a `download_estimates_sum_30_days` floor calibrated via `/exsc` — so the records you want fall inside the window. `/exsc` counts and stats are not capped.
 - Text search `["match","name","X"]` matches whole tokens, case-insensitively. No wildcards.
 - There are no `revenue_*` fields at the record root — only inside `custom_meta` (see analysis-patterns).

@@ -15,32 +15,61 @@ Modes:
 If --mode is omitted, the script guesses from the record count and developers:
 one record → app; one developer → portfolio; otherwise → releases.
 Niche mode is never auto-detected — pass --mode niche explicitly.
+
+Missing estimates: Appfigures leaves `revenue_estimates_*` and `*_monthly_change`
+null for a large share of apps (free apps, low-volume apps, very recent releases).
+Null means "no estimate", NOT zero, so it renders as "—" and is excluded from
+totals and from the growing/falling/flat classification. Totals carry a coverage
+note so a market sum is never mistaken for complete.
 """
 import argparse
 import json
 import sys
 
+NA = '—'
+
 
 def ww(record, key):
+    """Worldwide (`country=zz`) value for `key`. Returns None when there is no estimate."""
     z = next((x for x in (record.get('custom_meta') or []) if x.get('country') == 'zz'), None)
-    return (z or {}).get(key, 0) or 0
+    return (z or {}).get(key)
 
 
 def mom_pct(current, delta):
+    """MoM% from an absolute delta. None when either input is unknown."""
+    if current is None or delta is None:
+        return None
     prev = current - delta
-    return (delta / prev * 100) if prev > 0 else 0
+    return (delta / prev * 100) if prev > 0 else None
 
 
 def fmt_int(n):
+    if n is None:
+        return NA
     return f'{n:,}' if isinstance(n, (int, float)) else str(n)
 
 
 def fmt_money(n):
-    return f'${n:,.0f}' if n else '$0'
+    if n is None:
+        return NA
+    return f'${n:,.0f}'
+
+
+def fmt_pct(n):
+    return NA if n is None else f'{n:+.1f}%'
+
+
+def fmt_pct0(n):
+    return NA if n is None else f'{n:+.0f}%'
+
+
+def fmt_arpd(n):
+    return NA if n is None else f'${n:.2f}'
 
 
 def enrich(rec):
-    """Lift worldwide metrics to the top level."""
+    """Lift worldwide metrics to the top level. `_*` values may be None (no estimate);
+    `_*_n` are None-coerced-to-0 and exist only for sorting and summing."""
     rec = dict(rec)
     rev30 = ww(rec, 'revenue_estimates_sum_30_days')
     dl30 = ww(rec, 'download_estimates_sum_30_days')
@@ -52,27 +81,41 @@ def enrich(rec):
     rec['_dl365'] = ww(rec, 'download_estimates_sum_365_days')
     rec['_mom_rev'] = mom_pct(rev30, delta_r)
     rec['_mom_dl'] = mom_pct(dl30, delta_d)
-    rec['_arpd'] = (rev30 / dl30) if dl30 else 0
-    rec['_prev_rev30'] = rev30 - delta_r
-    rec['_prev_dl30'] = dl30 - delta_d
+    rec['_arpd'] = (rev30 / dl30) if (rev30 is not None and dl30) else None
+    rec['_prev_rev30'] = (rev30 - delta_r) if (rev30 is not None and delta_r is not None) else None
+    rec['_prev_dl30'] = (dl30 - delta_d) if (dl30 is not None and delta_d is not None) else None
+    rec['_rev30_n'] = rev30 or 0
+    rec['_rev365_n'] = rec['_rev365'] or 0
+    rec['_dl30_n'] = dl30 or 0
     return rec
+
+
+def coverage_note(enriched, label='revenue estimates'):
+    """One-line note on how many records actually carry an estimate."""
+    have = sum(1 for r in enriched if r['_rev30'] is not None)
+    if have == len(enriched):
+        return None
+    return (f'⚠️ Totals cover the **{have} of {len(enriched)}** apps with {label}; '
+            f'the other {len(enriched) - have} report no estimate (shown as {NA}) and are '
+            f'excluded from sums — the real market total is higher.')
 
 
 def country_table(record, top=10):
     countries = sorted(
         [c for c in (record.get('custom_meta') or [])
          if c.get('country') and c['country'] != 'zz'],
-        key=lambda x: x.get('revenue_estimates_sum_30_days', 0) or 0,
+        key=lambda x: x.get('revenue_estimates_sum_30_days') or 0,
         reverse=True,
     )
     out = ['| Country | DL 30d | Rev 30d | ARPD | Rev 365d |',
            '|---|---:|---:|---:|---:|']
     for c in countries[:top]:
-        cdl = c.get('download_estimates_sum_30_days', 0) or 0
-        crv = c.get('revenue_estimates_sum_30_days', 0) or 0
-        cr365 = c.get('revenue_estimates_sum_365_days', 0) or 0
-        arpd = f'${crv/cdl:.2f}' if cdl else '—'
-        out.append(f'| {c["country"].upper()} | {fmt_int(cdl)} | {fmt_money(crv)} | {arpd} | {fmt_money(cr365)} |')
+        cdl = c.get('download_estimates_sum_30_days')
+        crv = c.get('revenue_estimates_sum_30_days')
+        cr365 = c.get('revenue_estimates_sum_365_days')
+        arpd = fmt_arpd(crv / cdl) if (crv is not None and cdl) else NA
+        out.append(f'| {c["country"].upper()} | {fmt_int(cdl)} | {fmt_money(crv)} | '
+                   f'{arpd} | {fmt_money(cr365)} |')
     return '\n'.join(out)
 
 
@@ -86,12 +129,13 @@ def store_link(record):
 def render_app(record, limit_countries=10):
     r = enrich(record)
     rt = r.get('all_rating')
-    rating = f'{rt/10}★ × {fmt_int(r.get("all_rating_count", 0))}' if rt else '—'
-    mon = ', '.join(r.get('monetization_strategies') or [])
+    rating = f'{rt/10}★ × {fmt_int(r.get("all_rating_count"))}' if rt else NA
+    mon = ', '.join(r.get('monetization_strategies') or []) or NA
+    subtitle = r.get('subtitle')  # only present if the query asked for it
     out = [
         f'# 🎯 {r.get("name")}',
         '',
-        f'**{r.get("subtitle") or ""}** · {store_link(r)}',
+        f'**{subtitle}** · {store_link(r)}' if subtitle else store_link(r),
         f'**Developer:** {r.get("developer")} · **Release:** {(r.get("release_date") or "")[:10]} · **Rating:** {rating}',
         f'**Monetization:** {mon}',
         '',
@@ -99,10 +143,17 @@ def render_app(record, limit_countries=10):
         '',
         '| Metric | 30d | 365d | MoM% | Prev 30d |',
         '|---|---:|---:|---:|---:|',
-        f'| Downloads | {fmt_int(r["_dl30"])} | {fmt_int(r["_dl365"])} | {r["_mom_dl"]:+.1f}% | {fmt_int(r["_prev_dl30"])} |',
-        f'| Revenue | {fmt_money(r["_rev30"])} | {fmt_money(r["_rev365"])} | {r["_mom_rev"]:+.1f}% | {fmt_money(r["_prev_rev30"])} |',
-        f'| ARPD | ${r["_arpd"]:.2f} | — | — | — |',
+        f'| Downloads | {fmt_int(r["_dl30"])} | {fmt_int(r["_dl365"])} | '
+        f'{fmt_pct(r["_mom_dl"])} | {fmt_int(r["_prev_dl30"])} |',
+        f'| Revenue | {fmt_money(r["_rev30"])} | {fmt_money(r["_rev365"])} | '
+        f'{fmt_pct(r["_mom_rev"])} | {fmt_money(r["_prev_rev30"])} |',
+        f'| ARPD | {fmt_arpd(r["_arpd"])} | {NA} | {NA} | {NA} |',
         '',
+    ]
+    if r['_rev30'] is None:
+        out.append(f'⚠️ Appfigures publishes no revenue estimate for this app — {NA} means '
+                   'unknown, not $0.\n')
+    out += [
         f'## Top-{limit_countries} countries by revenue 30d',
         '',
         country_table(record, limit_countries),
@@ -112,7 +163,7 @@ def render_app(record, limit_countries=10):
 
 def render_releases(records, top=15, limit_countries=10):
     enriched = [enrich(r) for r in records]
-    enriched.sort(key=lambda x: x['_rev30'], reverse=True)
+    enriched.sort(key=lambda x: x['_rev30_n'], reverse=True)
     out = [f'# 🏆 Top releases\n\n**Sample:** {len(records)} apps\n',
            '| # | Release | Rev 30d | DL 30d | MoM% | Apple ID | Name · Developer |',
            '|---|---|---:|---:|---:|---|---|']
@@ -120,9 +171,12 @@ def render_releases(records, top=15, limit_countries=10):
         rd = (r.get('release_date') or '')[:10]
         out.append(
             f'| {i} | {rd} | {fmt_money(r["_rev30"])} | {fmt_int(r["_dl30"])} | '
-            f'{r["_mom_rev"]:+.0f}% | {r.get("stores_id")} | '
+            f'{fmt_pct0(r["_mom_rev"])} | {r.get("stores_id")} | '
             f'{r.get("name","")[:40]} · {r.get("developer","")[:25]} |'
         )
+    note = coverage_note(enriched)
+    if note:
+        out.append(f'\n{note}')
     if enriched:
         out.append('\n---\n')
         out.append('## 🥇 Leader — deep dive\n')
@@ -132,21 +186,21 @@ def render_releases(records, top=15, limit_countries=10):
 
 def render_portfolio(records, top=15):
     enriched = [enrich(r) for r in records]
-    enriched.sort(key=lambda x: x['_rev30'], reverse=True)
-    total_rev30 = sum(r['_rev30'] for r in enriched)
-    total_rev365 = sum(r['_rev365'] for r in enriched)
-    total_dl30 = sum(r['_dl30'] for r in enriched)
+    enriched.sort(key=lambda x: x['_rev30_n'], reverse=True)
+    total_rev30 = sum(r['_rev30_n'] for r in enriched)
+    total_rev365 = sum(r['_rev365_n'] for r in enriched)
+    total_dl30 = sum(r['_dl30_n'] for r in enriched)
     dev = enriched[0].get('developer') if enriched else '?'
 
-    top_share = (enriched[0]['_rev30'] / total_rev30 * 100) if total_rev30 else 0
-    hits = sum(1 for r in enriched if r['_rev30'] > 1000)
+    top_share = (enriched[0]['_rev30_n'] / total_rev30 * 100) if total_rev30 else 0
+    hits = sum(1 for r in enriched if r['_rev30_n'] > 1000)
 
     out = [
         f'# 🏭 {dev} — iOS Portfolio\n',
         f'**Apps:** {len(enriched)} · **Run rate:** ~${total_rev30*12/1e6:.1f}M/yr\n',
         '| | 30d | 365d |',
         '|---|---:|---:|',
-        f'| Downloads | {fmt_int(total_dl30)} | — |',
+        f'| Downloads | {fmt_int(total_dl30)} | {NA} |',
         f'| Revenue | {fmt_money(total_rev30)} | {fmt_money(total_rev365)} |',
         '',
         '## Top performers\n',
@@ -158,29 +212,35 @@ def render_portfolio(records, top=15):
         out.append(
             f'| {i} | {r.get("name","")[:40]} | {rd} | '
             f'{fmt_money(r["_rev30"])} | {fmt_int(r["_dl30"])} | '
-            f'{fmt_money(r["_rev365"])} | {r["_mom_rev"]:+.0f}% |'
+            f'{fmt_money(r["_rev365"])} | {fmt_pct0(r["_mom_rev"])} |'
         )
     out.extend([
         '',
         '## Structure',
-        f'- Cash cow: {top_share:.1f}% of revenue from a single app',
+        f'- Cash cow: {top_share:.1f}% of estimated revenue from a single app',
         f'- Hit rate: {hits} of {len(enriched)} apps make >$1K/mo',
     ])
+    note = coverage_note(enriched)
+    if note:
+        out.append(f'\n{note}')
     return '\n'.join(out)
 
 
 def render_niche(records, top=15):
     enriched = [enrich(r) for r in records]
-    enriched.sort(key=lambda x: x['_rev30'], reverse=True)
-    total_rev30 = sum(r['_rev30'] for r in enriched)
-    total_rev365 = sum(r['_rev365'] for r in enriched)
+    enriched.sort(key=lambda x: x['_rev30_n'], reverse=True)
+    total_rev30 = sum(r['_rev30_n'] for r in enriched)
+    total_rev365 = sum(r['_rev365_n'] for r in enriched)
 
-    growing = [r for r in enriched if r['_mom_rev'] > 10 and r['_rev30'] > 1000]
-    falling = [r for r in enriched if r['_mom_rev'] < -10 and r['_rev30'] > 1000]
-    flat = [r for r in enriched if -10 <= r['_mom_rev'] <= 10 and r['_rev30'] > 1000]
+    # Only apps with BOTH a revenue estimate and a known change can be classified.
+    ranked = [r for r in enriched if r['_mom_rev'] is not None and r['_rev30_n'] > 1000]
+    unknown = [r for r in enriched if r['_mom_rev'] is None or r['_rev30'] is None]
+    growing = [r for r in ranked if r['_mom_rev'] > 10]
+    falling = [r for r in ranked if r['_mom_rev'] < -10]
+    flat = [r for r in ranked if -10 <= r['_mom_rev'] <= 10]
 
     out = [
-        f'# 🔍 Niche analysis\n',
+        '# 🔍 Niche analysis\n',
         f'**Apps in sample:** {len(enriched)}',
         f'**Combined:** {fmt_money(total_rev30)}/mo, {fmt_money(total_rev365)}/yr\n',
         f'## Top-{top} by revenue 30d\n',
@@ -192,23 +252,29 @@ def render_niche(records, top=15):
         out.append(
             f'| {i} | {r.get("name","")[:35]} · {r.get("developer","")[:20]} | '
             f'{fmt_money(r["_rev30"])} | {fmt_int(r["_dl30"])} | '
-            f'{r["_mom_rev"]:+.0f}% | {rd} |'
+            f'{fmt_pct0(r["_mom_rev"])} | {rd} |'
         )
+    note = coverage_note(enriched)
+    if note:
+        out.append(f'\n{note}')
     out.extend([
         '',
         '## Niche dynamics',
         f'- 📈 Growing >10% MoM (rev > $1K): **{len(growing)}**',
         f'- 📉 Falling <-10% MoM (rev > $1K): **{len(falling)}**',
         f'- ➖ Flat: **{len(flat)}**',
+        f'- ❔ No estimate (unclassifiable, NOT flat): **{len(unknown)}**',
     ])
     if growing:
         out.append('\n### Gaining momentum')
         for r in growing[:5]:
-            out.append(f'- **{r.get("name")}** · {r.get("developer")} — {fmt_money(r["_rev30"])} ({r["_mom_rev"]:+.0f}% MoM)')
+            out.append(f'- **{r.get("name")}** · {r.get("developer")} — '
+                       f'{fmt_money(r["_rev30"])} ({fmt_pct0(r["_mom_rev"])} MoM)')
     if falling:
         out.append('\n### Losing ground')
         for r in falling[:5]:
-            out.append(f'- **{r.get("name")}** · {r.get("developer")} — {fmt_money(r["_rev30"])} ({r["_mom_rev"]:+.0f}% MoM)')
+            out.append(f'- **{r.get("name")}** · {r.get("developer")} — '
+                       f'{fmt_money(r["_rev30"])} ({fmt_pct0(r["_mom_rev"])} MoM)')
     return '\n'.join(out)
 
 

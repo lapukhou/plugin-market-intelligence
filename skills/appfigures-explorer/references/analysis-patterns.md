@@ -6,11 +6,23 @@
 
 ```python
 def ww(record, key):
-    """Extract a worldwide metric from custom_meta."""
+    """Extract a worldwide metric from custom_meta. None = no estimate, NOT zero."""
     z = next((x for x in (record.get('custom_meta') or [])
               if x.get('country')=='zz'), None)
-    return (z or {}).get(key, 0) or 0
+    return (z or {}).get(key)
 ```
+
+### ⚠️ Null is "unknown", not zero
+
+`revenue_estimates_*` and `*_monthly_change` are **null for a large share of apps** — free apps, low-volume apps, and most releases from the last few weeks. Measured on live samples: 5 of 15 top Books apps and 11 of 25 recent releases had no revenue estimate; `download_estimates_monthly_change` was null for 23 of those same 25 new releases.
+
+Coercing null to 0 (`or 0`) is the trap: it turns "Appfigures doesn't know" into the confident claims "$0 revenue" and "0% MoM, flat". Consequences to avoid:
+
+- Render missing values as `—`, never `$0`.
+- Exclude them from market totals **and say how many you excluded** — otherwise a niche sum reads as complete when it isn't.
+- Never count an unknown-change app as "flat". It belongs in its own unclassifiable bucket.
+
+`scripts/format_report.py` implements all three.
 
 ## MoM% — the most important pattern
 
@@ -20,17 +32,28 @@ def ww(record, key):
 
 ```python
 def mom_pct(current, delta):
-    """Correct MoM%: delta is the absolute delta of the same field."""
+    """Correct MoM%: delta is the absolute delta of the same field.
+    None when either input is unknown — never fall back to 0."""
+    if current is None or delta is None:
+        return None
     prev = current - delta
-    return (delta / prev * 100) if prev > 0 else 0
+    return (delta / prev * 100) if prev > 0 else None
 ```
 
 Example: if `revenue_estimates_sum_30_days = 273955` and `revenue_estimates_monthly_change = 21`, then prev = 273934, MoM = +0.008% — not +21%. Conversely: if `monthly_change = 38070` with `30d = 58093`, then prev = $20K, MoM = +190% — a genuine explosion.
 
+### How much to trust the resulting MoM%
+
+The deltas are tiny relative to the sums for established apps, so the formula returns ≈0% for most of the market. Live examples: Audible at **$20.1M**/30d carries a `revenue_estimates_monthly_change` of **760** (+0.004%); Instagram at $964K/30d carries **119** (+0.01%). For fast-moving new apps the field does behave like a real 30-day delta — Seekee, released ~5 weeks ago, showed a `download_estimates_monthly_change` of 32319 against a 30-day sum of 38359 (84% of it, i.e. almost all of its volume is new).
+
+Practical rule: a sub-1% MoM on a high-volume app means **"no change detected in this field"**, not a measured flat month. Report it as such, and don't build a "the niche is stagnating" narrative on a column of `+0%`. `*_daily_change` is not a smaller version of the same thing — it is sometimes larger than `*_monthly_change` (Color by Number: daily +4455 vs monthly −55), so the two are not on a common scale and should not be mixed in one trend claim.
+
+Where a trend actually matters, prefer the 365-day baseline comparison below — it is derived from two independently reported sums rather than from a delta field of uncertain scale.
+
 ## ARPD (revenue per download)
 
 ```python
-arpd = revenue_30d / downloads_30d if downloads_30d else 0
+arpd = (revenue_30d / downloads_30d) if (revenue_30d is not None and downloads_30d) else None
 ```
 
 A rough proxy for unit economics. Typical ranges:
@@ -196,10 +219,10 @@ import json, urllib.request, urllib.parse
 
 UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36'
 
-def fetch_exs(q, fields, sort=None, count=100):
+def fetch_exs(q, fields, count=25):
+    # No sort= — the anonymous plan 403s on any sort value, and count is capped at 25.
     body = urllib.parse.urlencode({'q': q}).encode()
-    qs = f'fields={urllib.parse.quote(fields, safe=",*")}&count={count}'
-    if sort: qs += f'&sort={urllib.parse.quote(sort)}'
+    qs = f'fields={urllib.parse.quote(fields, safe=",*")}&count={min(count, 25)}'
     url = f'https://appfigures.com/market/explorer/_u/data/exs?{qs}'
     req = urllib.request.Request(url, data=body,
         headers={'User-Agent': UA, 'Content-Type': 'application/x-www-form-urlencoded'})

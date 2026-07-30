@@ -15,6 +15,8 @@ Market intelligence for iOS App Store and Google Play apps via the public **Appf
 - **Revenue geography** — top countries by revenue share
 - **Lookups** by keyword, bundle ID, or Apple App Store ID
 
+What anonymous access **cannot** do: the Explorer API rejects `sort=` and caps `/exs` at **25 records per query**, with no deep pagination. Niche work therefore means narrowing the filter (typically a downloads floor, calibrated against the uncapped `/exsc` count) until the apps that matter fall inside that window — the skill does this and reports the floor and the count it excluded. Appfigures also leaves revenue estimates null for a sizeable share of apps; those render as `—` and stay out of the totals rather than being counted as `$0`.
+
 Just say something like:
 
 > How much does this app make, and who else is in this niche?
